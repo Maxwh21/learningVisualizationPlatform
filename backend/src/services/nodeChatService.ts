@@ -1,5 +1,7 @@
 import OpenAI from 'openai';
 import { db } from '../db/database';
+import { generateManimScript, saveScript, editManimScript, readScript } from './manimService';
+import { getBlocks } from './blockService';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -49,6 +51,7 @@ export interface NodeContext {
   breadcrumb: string[];          // ['Root topic', ..., 'Current node']
   parentTitle: string | null;
   childTitles: string[];
+  nextSiblingNode: { id: number; title: string } | null;
 }
 
 export function loadNodeContext(nodeId: number): NodeContext | null {
@@ -68,6 +71,12 @@ export function loadNodeContext(nodeId: number): NodeContext | null {
     .prepare('SELECT title FROM tree_nodes WHERE parent_node_id = ? ORDER BY order_index ASC')
     .all(node.id) as { title: string }[];
 
+  const nextSibling = node.parent_node_id
+    ? (db
+        .prepare('SELECT id, title FROM tree_nodes WHERE parent_node_id = ? AND order_index = ? LIMIT 1')
+        .get(node.parent_node_id, node.order_index + 1) as { id: number; title: string } | undefined)
+    : undefined;
+
   return {
     treeTopic: tree.topic_name,
     nodeTitle: node.title,
@@ -77,12 +86,34 @@ export function loadNodeContext(nodeId: number): NodeContext | null {
     breadcrumb: buildBreadcrumb(node),
     parentTitle: parent?.title ?? null,
     childTitles: children.map((c) => c.title),
+    nextSiblingNode: nextSibling ?? null,
   };
 }
 
 // ─── System prompt ──────────────────────────────────────────────────────────
 
-function buildSystemPrompt(ctx: NodeContext): string {
+function buildBlocksContext(nodeId: number): string {
+  const blocks = getBlocks(nodeId);
+  if (blocks.length === 0) return '';
+
+  const notes = blocks
+    .filter((b) => b.type === 'text' && b.content.trim())
+    .map((b) => `- ${b.content.trim()}`)
+    .join('\n');
+
+  const scripts = blocks
+    .filter((b) => b.type === 'manim')
+    .map((b) => `- ${b.content}`)
+    .join('\n');
+
+  const parts: string[] = [];
+  if (notes) parts.push(`## User's notes for this topic\n${notes}`);
+  if (scripts) parts.push(`## Manim animations already created\n${scripts}`);
+
+  return parts.length > 0 ? '\n\n' + parts.join('\n\n') : '';
+}
+
+function buildSystemPrompt(ctx: NodeContext, nodeId: number): string {
   const breadcrumbStr = ctx.breadcrumb.join(' › ');
 
   const childrenStr =
@@ -144,7 +175,15 @@ When writing any mathematical expression, symbol, formula, or equation, always u
 - Display math (standalone equations): wrap in double dollar signs, e.g. $$e^{i\pi} + 1 = 0$$
 - Never write math as plain text like "(1 + 1/n)^n" — always use LaTeX delimiters so it renders correctly.
 
-You are NOT a general chatbot. You are a paced tutor for: "${ctx.nodeTitle}" within "${ctx.treeTopic}". Teach one section at a time and let the user control the pace.`;
+You are NOT a general chatbot. You are a paced tutor for: "${ctx.nodeTitle}" within "${ctx.treeTopic}". Teach one section at a time and let the user control the pace.${buildBlocksContext(nodeId)}${ctx.nextSiblingNode ? `
+
+## Next topic in the learning path
+
+The next node the user should visit after this one is: "${ctx.nextSiblingNode.title}"
+
+If the user's question or the natural flow of the conversation is clearly moving toward that topic (e.g. they ask about it directly, or you have finished covering the current concept and they seem ready to move on), you may suggest it naturally within your reply. When you do, end your reply with exactly this marker on its own line:
+SUGGEST_NEXT_NODE
+Do NOT include this marker unless you genuinely think the user is ready or asking about the next topic. Do not add it on every reply.` : ''}`;
 }
 
 // ─── Chat ───────────────────────────────────────────────────────────────────
@@ -154,28 +193,121 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ChatReply {
+  reply: string;
+  manimScript?: string;
+  suggestedNode?: { id: number; title: string };
+}
+
+type ManimAction =
+  | { type: 'create'; request: string }
+  | { type: 'fix'; scriptName: string; instruction: string }
+  | { type: 'discuss'; scriptName: string; question: string }
+  | null;
+
+function parseManimAction(message: string): ManimAction {
+  // Edit: @MANIM @FIX:scriptName instruction text
+  const fixMatch = message.match(/^@MANIM\s+@FIX:([a-z0-9_]{1,60})\s+([\s\S]+)/i);
+  if (fixMatch) {
+    return { type: 'fix', scriptName: fixMatch[1], instruction: fixMatch[2].trim() };
+  }
+  // Discuss: @MANIM @DISCUSS:scriptName question
+  const discussMatch = message.match(/^@MANIM\s+@DISCUSS:([a-z0-9_]{1,60})\s+([\s\S]+)/i);
+  if (discussMatch) {
+    return { type: 'discuss', scriptName: discussMatch[1], question: discussMatch[2].trim() };
+  }
+  // Create: @MANIM: request text
+  const createMatch = message.match(/^@MANIM:\s*/i);
+  if (createMatch) {
+    const request = message.slice(createMatch[0].length).trim();
+    if (request) return { type: 'create', request };
+  }
+  return null;
+}
+
 export async function getNodeChatReply(
   nodeId: number,
   userMessage: string,
   history: ChatMessage[]
-): Promise<string> {
+): Promise<ChatReply> {
   const ctx = loadNodeContext(nodeId);
   if (!ctx) throw new Error('Node not found');
 
+  const action = parseManimAction(userMessage);
+
+  if (action?.type === 'create') {
+    try {
+      const { slug, code } = await generateManimScript(ctx, action.request, history);
+      const finalSlug = saveScript(nodeId, slug, code);
+      return {
+        reply: `Script **${finalSlug}** created — find it in the Scripts panel on the left. Click it and then hit "Run script" to render the animation.`,
+        manimScript: finalSlug,
+      };
+    } catch (err) {
+      console.error('[manimGenerate]', err);
+      return { reply: "Couldn't generate the Manim script — please try again." };
+    }
+  }
+
+  if (action?.type === 'fix') {
+    try {
+      await editManimScript(nodeId, action.scriptName, action.instruction);
+      return {
+        reply: `Script **${action.scriptName}** updated. Hit "Run script" to render the new version.`,
+        manimScript: action.scriptName,
+      };
+    } catch (err) {
+      console.error('[manimEdit]', err);
+      return { reply: "Couldn't update the script — please try again." };
+    }
+  }
+
+  if (action?.type === 'discuss') {
+    const code = readScript(nodeId, action.scriptName);
+    if (!code) return { reply: `Couldn't find script **${action.scriptName}**.` };
+
+    const discussMessages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: 'system', content: buildSystemPrompt(ctx, nodeId) },
+      ...history.map((m) => ({ role: m.role, content: m.content } as OpenAI.ChatCompletionMessageParam)),
+      {
+        role: 'user',
+        content: `I'm looking at this Manim script called "${action.scriptName}":\n\`\`\`python\n${code}\n\`\`\`\n\n${action.question}`,
+      },
+    ];
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: discussMessages,
+      temperature: 0.7,
+      max_tokens: 600,
+    });
+
+    const reply = response.choices[0]?.message?.content;
+    if (!reply) throw new Error('Empty response from OpenAI');
+    return { reply };
+  }
+
   const messages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: buildSystemPrompt(ctx) },
+    { role: 'system', content: buildSystemPrompt(ctx, nodeId) },
     ...history.map((m) => ({ role: m.role, content: m.content } as OpenAI.ChatCompletionMessageParam)),
     { role: 'user', content: userMessage },
   ];
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
     messages,
     temperature: 0.7,
     max_tokens: 600,
   });
 
-  const reply = response.choices[0]?.message?.content;
+  let reply = response.choices[0]?.message?.content;
   if (!reply) throw new Error('Empty response from OpenAI');
-  return reply;
+
+  let suggestedNode: { id: number; title: string } | undefined;
+  if (reply.includes('SUGGEST_NEXT_NODE') && ctx.nextSiblingNode) {
+    suggestedNode = ctx.nextSiblingNode;
+    reply = reply.replace(/\n?SUGGEST_NEXT_NODE\n?/g, '').trim();
+  }
+
+  return { reply, suggestedNode };
 }

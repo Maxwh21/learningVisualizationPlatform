@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getNodeChatReply, ChatMessage } from '../services/nodeChatService';
+import { getNodeChatReply, ChatMessage, ChatReply } from '../services/nodeChatService';
 
 export async function nodeChat(req: Request, res: Response): Promise<void> {
   try {
@@ -19,8 +19,8 @@ export async function nodeChat(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const reply = await getNodeChatReply(nodeId, message.trim(), history);
-    res.json({ reply });
+    const chatReply: ChatReply = await getNodeChatReply(nodeId, message.trim(), history);
+    res.json(chatReply);
   } catch (error) {
     console.error('[nodeChat]', error);
     res.status(500).json({ error: 'Failed to get chat response' });

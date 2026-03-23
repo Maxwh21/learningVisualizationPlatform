@@ -25,3 +25,11 @@ Thumbs.db
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Python virtual environment for Manim
+manim_env/
+media
+manim/*
+
+# DB
+database/learning.db

@@ -8,6 +8,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { getTree, sendNodeChat, ChatMessage, TreeDetail, TreeNode } from '@/lib/api';
+import ContentBlocks from '@/components/ContentBlocks';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -31,6 +32,8 @@ const QUICK_ACTIONS = [
   { label: 'Give intuition', message: 'Give me an intuition for why this works.' },
   { label: 'Show example', message: 'Can you show me a concrete example?' },
 ];
+
+const MANIM_PREFIX = '@MANIM: ';
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -100,9 +103,20 @@ export default function NodePage() {
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [manimRefreshTrigger, setManimRefreshTrigger] = useState(0);
+  const [suggestedNode, setSuggestedNode] = useState<{ id: number; title: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Auto-resize textarea ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+  }, [input]);
 
   // ── Load tree + node data ──────────────────────────────────────────────────
 
@@ -151,8 +165,14 @@ export default function NodePage() {
     setChatError('');
 
     try {
-      const reply = await sendNodeChat(nodeId, trimmed, messages);
-      setMessages([...nextHistory, { role: 'assistant', content: reply }]);
+      const chatReply = await sendNodeChat(nodeId, trimmed, messages);
+      setMessages([...nextHistory, { role: 'assistant', content: chatReply.reply }]);
+      if (chatReply.manimScript) {
+        setManimRefreshTrigger((t) => t + 1);
+      }
+      if (chatReply.suggestedNode) {
+        setSuggestedNode(chatReply.suggestedNode);
+      }
     } catch {
       setChatError('Failed to get a response. Please try again.');
     } finally {
@@ -260,6 +280,21 @@ export default function NodePage() {
               </ul>
             </div>
           )}
+
+          {/* Notes & scripts */}
+          <hr className="mt-8 border-gray-100" />
+          <ContentBlocks
+            nodeId={nodeId}
+            refreshTrigger={manimRefreshTrigger}
+            onEdit={(scriptName) => {
+              setInput(`@MANIM @FIX:${scriptName} `);
+              setTimeout(() => inputRef.current?.focus(), 0);
+            }}
+            onDiscuss={(scriptName) => {
+              setInput(`@MANIM @DISCUSS:${scriptName} `);
+              setTimeout(() => inputRef.current?.focus(), 0);
+            }}
+          />
         </div>
 
         {/* ── RIGHT: AI tutor chat ── */}
@@ -343,6 +378,39 @@ export default function NodePage() {
                   {action.label}
                 </button>
               ))}
+              <button
+                onClick={() => {
+                  setInput(MANIM_PREFIX);
+                  setTimeout(() => inputRef.current?.focus(), 0);
+                }}
+                disabled={isSending}
+                className="text-xs bg-purple-50 border border-purple-200 hover:border-purple-400 hover:text-purple-700 text-purple-600 px-2.5 py-1 rounded-full transition-colors disabled:opacity-40 font-medium"
+              >
+                @MANIM:
+              </button>
+            </div>
+          )}
+
+          {/* Next topic suggestion card */}
+          {suggestedNode && (
+            <div className="flex-shrink-0 mx-6 mb-2 p-3 bg-indigo-50 border border-indigo-200 rounded-lg flex items-center justify-between gap-3">
+              <span className="text-sm text-indigo-700 min-w-0">
+                Ready for the next topic? <strong className="truncate">{suggestedNode.title}</strong>
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => router.push(`/tree/${treeId}/node/${suggestedNode.id}`)}
+                  className="text-xs bg-indigo-600 text-white px-3 py-1 rounded hover:bg-indigo-700 transition-colors"
+                >
+                  Go →
+                </button>
+                <button
+                  onClick={() => setSuggestedNode(null)}
+                  className="text-xs text-gray-400 hover:text-gray-600 px-1 transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
           )}
 
@@ -357,8 +425,7 @@ export default function NodePage() {
                 onKeyDown={handleKeyDown}
                 placeholder="Ask a question… (Enter to send, Shift+Enter for new line)"
                 disabled={isSending}
-                className="flex-1 resize-none text-sm text-gray-800 placeholder-gray-400 focus:outline-none bg-transparent leading-relaxed max-h-32 disabled:opacity-50"
-                style={{ fieldSizing: 'content' } as React.CSSProperties}
+                className="flex-1 resize-none text-sm text-gray-800 placeholder-gray-400 focus:outline-none bg-transparent leading-relaxed overflow-y-auto disabled:opacity-50"
               />
               <button
                 onClick={() => send(input)}

@@ -33,6 +33,15 @@ db.exec(`
     FOREIGN KEY (tree_id) REFERENCES trees(id) ON DELETE CASCADE,
     FOREIGN KEY (parent_node_id) REFERENCES tree_nodes(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS node_blocks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id     INTEGER NOT NULL,
+    type        TEXT    NOT NULL CHECK(type IN ('text', 'manim')),
+    content     TEXT    NOT NULL DEFAULT '',
+    order_index INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (node_id) REFERENCES tree_nodes(id) ON DELETE CASCADE
+  );
 `);
 
 // Add new columns to existing databases without breaking anything.

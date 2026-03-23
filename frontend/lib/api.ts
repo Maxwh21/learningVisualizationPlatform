@@ -58,17 +58,106 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ChatReply {
+  reply: string;
+  manimScript?: string;
+  suggestedNode?: { id: number; title: string };
+}
+
 export async function sendNodeChat(
   nodeId: number,
   message: string,
   history: ChatMessage[]
-): Promise<string> {
+): Promise<ChatReply> {
   const res = await fetch(`${API_URL}/node/${nodeId}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, history }),
   });
   if (!res.ok) throw new Error('Chat request failed');
-  const data = (await res.json()) as { reply: string };
-  return data.reply;
+  return res.json() as Promise<ChatReply>;
+}
+
+// ─── Blocks ───────────────────────────────────────────────────────────────────
+
+export interface Block {
+  id: number;
+  node_id: number;
+  type: 'text' | 'manim';
+  content: string;
+  order_index: number;
+}
+
+export async function getNodeBlocks(nodeId: number): Promise<Block[]> {
+  const res = await fetch(`${API_URL}/node/${nodeId}/blocks`);
+  if (!res.ok) throw new Error('Failed to fetch blocks');
+  return res.json();
+}
+
+export async function createNodeBlock(
+  nodeId: number,
+  type: 'text' | 'manim',
+  content: string
+): Promise<Block> {
+  const res = await fetch(`${API_URL}/node/${nodeId}/blocks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, content }),
+  });
+  if (!res.ok) throw new Error('Failed to create block');
+  return res.json();
+}
+
+export async function updateNodeBlock(
+  nodeId: number,
+  blockId: number,
+  content: string
+): Promise<void> {
+  const res = await fetch(`${API_URL}/node/${nodeId}/blocks/${blockId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error('Failed to update block');
+}
+
+export async function deleteNodeBlock(nodeId: number, blockId: number): Promise<void> {
+  const res = await fetch(`${API_URL}/node/${nodeId}/blocks/${blockId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete block');
+}
+
+// ─── Manim ────────────────────────────────────────────────────────────────────
+
+export interface ManimScript {
+  name: string;
+  hasVideo: boolean;
+}
+
+export async function listManimScripts(nodeId: number): Promise<ManimScript[]> {
+  const res = await fetch(`${API_URL}/node/${nodeId}/manim`);
+  if (!res.ok) throw new Error('Failed to list manim scripts');
+  return res.json();
+}
+
+export async function deleteManimScript(nodeId: number, scriptName: string): Promise<void> {
+  const res = await fetch(`${API_URL}/node/${nodeId}/manim/${scriptName}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete manim script');
+}
+
+export async function runManimScript(
+  nodeId: number,
+  scriptName: string
+): Promise<{ videoName: string }> {
+  const res = await fetch(`${API_URL}/node/${nodeId}/manim/${scriptName}/run`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || 'Render failed');
+  }
+  return res.json();
 }

@@ -5,6 +5,7 @@ import {
   getTreeById,
   deleteTreeById,
 } from '../services/treeService';
+import { deleteNodeDir } from '../services/manimService';
 
 export async function listTrees(req: Request, res: Response): Promise<void> {
   try {
@@ -62,12 +63,18 @@ export async function deleteTree(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const deleted = deleteTreeById(id);
-    if (!deleted) {
+    const tree = getTreeById(id);
+    if (!tree) {
       res.status(404).json({ error: 'Tree not found' });
       return;
     }
 
+    // Clean up manim directories for all nodes before DB delete
+    for (const node of tree.nodes) {
+      deleteNodeDir(node.id);
+    }
+
+    deleteTreeById(id);
     res.status(204).send();
   } catch (error) {
     console.error('[deleteTree]', error);

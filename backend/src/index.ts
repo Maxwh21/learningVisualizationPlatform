@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import path from 'path';
 import express, { NextFunction, Request, Response } from 'express';
 import cors from 'cors';
 import { initializeDatabase } from './db/database';
@@ -10,6 +11,7 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+app.use('/manim', express.static(path.join(process.cwd(), '..', 'manim')));
 
 app.use('/tree', treeRouter);
 app.use('/node', nodeRouter);

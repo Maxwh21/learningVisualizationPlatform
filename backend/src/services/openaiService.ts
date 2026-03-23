@@ -61,7 +61,7 @@ Rules:
 
 export async function generateLearningTree(topic: string): Promise<AiTree> {
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: `Generate a learning tree for: ${topic}` },
